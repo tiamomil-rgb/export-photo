@@ -125,6 +125,14 @@ label.f{display:grid;gap:6px;font-size:13px;color:var(--muted)}
 .confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
 html,body{overscroll-behavior-y:none}
 .banner .status:empty{display:none}
+.proj.arch{background:var(--bg);border-style:dashed}
+.proj.arch .pname{color:var(--muted)}
+.qbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:var(--fg);color:var(--bg);font-size:13.5px;
+  padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.qbar.err{background:var(--danger);color:#fff}
+.qbar .btn{min-height:0;flex:none}
+#v-items main{padding-bottom:56px}
 .login{min-height:100vh;display:grid;place-items:center;padding-block:32px}
 .login .card{width:100%;max-width:380px;display:grid;gap:14px}
 .login .logo{width:56px;height:56px;border-radius:14px}
@@ -163,6 +171,8 @@ html,body{overscroll-behavior-y:none}
   <main class="wrap">
     <p class="note" id="p-note">프로젝트를 불러오는 중입니다.</p>
     <ul class="list" id="p-list"></ul>
+    <button class="btn small" id="a-toggle" hidden style="width:100%;margin-top:4px"></button>
+    <ul class="list" id="a-list" hidden></ul>
   </main>
   <div class="foot"><button class="linkish" id="logout">비밀번호 다시 입력</button></div>
 </div>
@@ -212,6 +222,12 @@ html,body{overscroll-behavior-y:none}
       <p class="status" id="dl-status"></p>
     </section>
   </main>
+</div>
+
+<!-- ========== 저장 진행 표시 ========== -->
+<div class="qbar" id="qbar" hidden role="status" aria-live="polite">
+  <span id="q-text"></span>
+  <button class="btn small" id="q-retry" hidden>다시 시도</button>
 </div>
 
 <!-- ========== 촬영 시트 ========== -->
@@ -266,7 +282,7 @@ html,body{overscroll-behavior-y:none}
 <script>
 (function(){
 /* ===== 설정: Apps Script 배포 후 받은 웹 앱 URL을 넣어 주세요 ===== */
-const API_URL = 'https://script.google.com/macros/s/여기에-배포-ID/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbx7a-ZxiqzB5fbRSW7sdhKu9U9P0OGdpKEwC-tqNo8SjYBAWWwJ_YcCbkwReBxf3ciYqg/exec';
 
 const $ = id => document.getElementById(id);
 const KEY_NAME = 'exportPhotoKey';
@@ -287,7 +303,7 @@ const S = { projects: [], project: null, data: null, items: [], filter: 'all',
             cur: null, file: null, previewUrl: null, useReuse: false, busy: false };
 const thumbCache = {};
 // 올리는 사진 크기: 긴 변 PHOTO_MAX 픽셀, JPEG 품질 PHOTO_Q
-const PHOTO_MAX = 1920, PHOTO_Q = 0.85;
+const PHOTO_MAX = 1600, PHOTO_Q = 0.82;
 
 const hasW = w => w !== null && w !== '' && w !== undefined;
 const fmtW = w => hasW(w) && Number.isFinite(Number(w)) ? Number(w).toFixed(2) : (hasW(w) ? String(w) : '');
@@ -349,19 +365,36 @@ async function loadProjects(){
   $('p-note').hidden = false; $('p-note').className = 'note'; $('p-note').textContent = '프로젝트를 불러오는 중입니다.';
   try {
     S.projects = await run('getProjects');
-    $('p-note').hidden = !!S.projects.length;
-    if (!S.projects.length) $('p-note').textContent = '프로젝트 탭이 없습니다. 시트에 프로젝트번호로 탭을 만들어 주세요.';
-    $('p-list').innerHTML = S.projects.map(p => {
-      const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
-      const state = p.total && p.done === p.total ? '<span class="pill done">촬영 완료</span>' : '';
-      return '<li><button class="proj" data-p="' + esc(p.name) + '"><div><div class="pname">' + esc(p.name) + '</div><div class="pmeta">' +
-        (p.owner ? '<span>담당 ' + esc(p.owner) + '</span>' : '<span>담당 미지정</span>') + state +
-        (p.sent ? '<span>메일 ' + esc(p.sent.split(' ')[0]) + '</span>' : '') +
-        '</div></div><div class="pcount">' + p.done + ' / ' + p.total + '</div><div class="pbar"><i style="width:' + pct + '%"></i></div></button></li>';
-    }).join('');
+    const complete = p => p.total > 0 && p.done === p.total;
+    // 촬영 중인 프로젝트 먼저, 촬영 완료는 아래로 (각각 시트 탭 순서 유지)
+    const active = S.projects.filter(p => !p.archived);
+    const shown = active.filter(p => !complete(p)).concat(active.filter(complete));
+    const archived = S.projects.filter(p => p.archived);
+    $('p-note').hidden = !!shown.length;
+    if (!shown.length) $('p-note').textContent = archived.length ? '진행 중인 프로젝트가 없습니다.' : '프로젝트 탭이 없습니다. 시트에 프로젝트번호로 탭을 만들어 주세요.';
+    $('p-list').innerHTML = shown.map(projCard).join('');
+    $('a-list').innerHTML = archived.map(projCard).join('');
+    $('a-toggle').hidden = !archived.length;
+    $('a-toggle').textContent = (S.showArchived ? '보관된 프로젝트 숨기기' : '보관된 프로젝트 보기') + ' (' + archived.length + ')';
+    $('a-list').hidden = !S.showArchived || !archived.length;
   } catch(e){ $('p-note').className = 'note err'; $('p-note').textContent = '프로젝트를 불러오지 못했습니다. ' + errMsg(e); }
 }
-$('p-list').addEventListener('click', e => { const b = e.target.closest('.proj'); if (b) openProject(b.dataset.p); });
+function projCard(p){
+  const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
+  const state = p.archived ? '<span class="pill todo">보관</span>'
+    : (p.total && p.done === p.total ? '<span class="pill done">촬영 완료</span>' : '');
+  return '<li><button class="proj' + (p.archived ? ' arch' : '') + '" data-p="' + esc(p.name) + '"><div><div class="pname">' + esc(p.name) + '</div><div class="pmeta">' +
+    (p.owner ? '<span>담당 ' + esc(p.owner) + '</span>' : '<span>담당 미지정</span>') + state +
+    (p.sent ? '<span>메일 ' + esc(p.sent.split(' ')[0]) + '</span>' : '') +
+    '</div></div><div class="pcount">' + p.done + ' / ' + p.total + '</div><div class="pbar"><i style="width:' + pct + '%"></i></div></button></li>';
+}
+['p-list', 'a-list'].forEach(id => $(id).addEventListener('click', e => { const b = e.target.closest('.proj'); if (b) openProject(b.dataset.p); }));
+$('a-toggle').addEventListener('click', () => {
+  S.showArchived = !S.showArchived;
+  const n = S.projects.filter(p => p.archived).length;
+  $('a-list').hidden = !S.showArchived;
+  $('a-toggle').textContent = (S.showArchived ? '보관된 프로젝트 숨기기' : '보관된 프로젝트 보기') + ' (' + n + ')';
+});
 $('p-refresh').addEventListener('click', loadProjects);
 $('back').addEventListener('click', showProjects);
 
@@ -378,7 +411,9 @@ async function loadItems(){
   try {
     const d = await run('getItems', S.project);
     if (d.name !== S.project) return;
-    S.data = d; S.items = d.items;
+    // 아직 저장 중이거나 실패한 품목은 화면의 내용을 유지
+    const keep = new Map(S.items.filter(i => i.pending || i.failed).map(i => [i.id, i]));
+    S.data = d; S.items = d.items.map(i => keep.get(i.id) || i);
     $('pj-sub').textContent = (d.owner ? '촬영담당 ' + d.owner : '촬영담당 미지정') + (d.sent ? ' · 완료메일 ' + d.sent : '');
     $('folder').href = d.folderUrl;
     $('mail-sub').textContent = d.mails ? d.mails : '프로젝트목록에 설명담당자 메일을 적어 주세요';
@@ -390,7 +425,7 @@ async function loadItems(){
 }
 $('i-refresh').addEventListener('click', loadItems);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || S.busy || !$('sheet').hidden || !$('v-login').hidden) return;
+  if (document.visibilityState !== 'visible' || S.busy || Q.length || !$('sheet').hidden || !$('v-login').hidden) return;
   if (S.project) loadItems(); else loadProjects();
 });
 
@@ -408,14 +443,18 @@ function render(){
   if (!view.length){ $('list').innerHTML = '<li class="empty">' + (S.filter === 'todo' ? '남은 품목이 없습니다. 모두 등록했어요.' : '아직 완료한 품목이 없습니다.') + '</li>'; return; }
   $('list').innerHTML = view.map(it => {
     let st;
-    if (it.mismatch) st = '<span class="pill warn">사진 확인 필요</span>';
+    if (it.failed) st = '<span class="pill warn">저장 실패</span>';
+    else if (it.pending) st = '<span class="pill kg">저장 중…</span>';
+    else if (it.mismatch) st = '<span class="pill warn">사진 확인 필요</span>';
     else if (isDone(it)) st = '<span class="pill done">완료</span>';
     else if (it.photoId) st = '<span class="pill part">무게 없음</span>';
     else if (it.reuse) st = '<span class="pill reuse">기존 사진 있음</span>';
     else if (hasW(it.weight)) st = '<span class="pill part">사진 없음</span>';
     else st = '<span class="pill todo">미등록</span>';
     const kg = hasW(it.weight) ? '<span class="pill kg">' + esc(fmtW(it.weight)) + ' kg</span>' : '';
-    const th = '<div class="thumb' + (it.photoId ? ' has' : '') + '" data-thumb="' + esc(it.thumbId || '') + '">' + (it.photoId ? '' : camSvg) + '</div>';
+    const th = it.localThumb
+      ? '<div class="thumb has"><img alt="" src="' + esc(it.localThumb) + '"></div>'
+      : '<div class="thumb' + (it.photoId ? ' has' : '') + '" data-thumb="' + esc(it.thumbId || '') + '">' + (it.photoId ? '' : camSvg) + '</div>';
     return '<li><button class="row" data-id="' + esc(it.id) + '"><span class="no">' + esc(it.no) + '</span><span class="main"><span class="name">' + esc(it.name) + '</span><span class="spec">' + esc(it.spec) + '</span><span class="meta">' + st + kg + '<span>' + esc(it.maker) + ' · ' + esc(it.qty) + 'EA</span></span></span>' + th + '</button></li>';
   }).join('');
   document.querySelectorAll('[data-thumb]').forEach(async el => {
@@ -459,6 +498,8 @@ async function openSheet(id){
     thumb(r.thumbId).then(src => { if (src && S.cur === id) $('r-thumb').innerHTML = '<img alt="" src="' + src + '">'; });
   }
   $('scrim').hidden = false; $('sheet').hidden = false; $('sheet').scrollTop = 0;
+  if (it.failed) setStatus('이 품목은 저장하지 못했습니다: ' + it.failed + ' 아래 저장을 다시 누르거나, 화면 아래 다시 시도를 눌러 주세요.', 'err');
+  if (it.localThumb){ setPreview(it.localThumb, false); return; }
   if (it.thumbId){ const src = await thumb(it.thumbId); if (S.cur === id && !S.file && !S.useReuse && src) setPreview(src, false); }
 }
 function closeSheet(){
@@ -515,43 +556,103 @@ function mailNote(m){
   return ' ' + (m.reason || '');
 }
 
-async function save(goNext){
-  if (S.busy || !S.cur) return;
+/* ---------- 저장: 화면은 바로 넘어가고, 사진은 뒤에서 차례대로 올림 ---------- */
+const Q = [];        // 올릴 차례를 기다리는 저장
+const FAILED = [];   // 실패한 저장 (다시 시도 가능)
+let qRunning = false;
+
+function save(goNext){
+  if (!S.cur) return;
   const it = S.items.find(i => i.id === S.cur); if (!it) return;
   const w = parseKg($('w-in').value);
   if (Number.isNaN(w)){ setStatus('무게는 숫자로 입력해 주세요. 예: 1.25', 'err'); $('w-in').focus(); return; }
-  S.busy = true; $('save').disabled = $('save-next').disabled = true;
-  try {
-    let res;
-    if (S.useReuse && it.reuse){
-      setStatus('기존 사진 복사 중…');
-      res = await run('reuseItem', S.project, it.id, w, it.reuse.project, it.reuse.id);
-    } else {
-      let photo = null;
-      if (S.file){ setStatus('사진 준비 중…'); photo = await preparePhoto(S.file); }
-      setStatus(photo ? '사진 올리는 중…' : '저장 중…');
-      res = await run('saveItem', S.project, it.id, w, photo);
-      if (photo && res.item && res.item.thumbId) thumbCache[res.item.thumbId] = Promise.resolve('data:image/jpeg;base64,' + photo.thumbB64);
+
+  const job = { project: S.project, id: it.id, weight: w, file: null, reuse: null, label: it.name };
+  if (S.useReuse && it.reuse){
+    job.reuse = { project: it.reuse.project, id: it.reuse.id };
+    it.localThumb = $('s-img').src || null;
+    it.photoId = it.photoId || 'pending';
+  } else if (S.file){
+    job.file = S.file;
+    it.localThumb = S.previewUrl; S.previewUrl = null;   // 미리보기 그대로 목록에 사용
+    it.photoId = it.photoId || 'pending';
+    it.mismatch = false;
+  }
+  it.weight = w; it.pending = true; delete it.failed; delete it.reuse;
+  for (let i = FAILED.length - 1; i >= 0; i--) if (FAILED[i].id === it.id && FAILED[i].project === job.project) FAILED.splice(i, 1);
+  Q.push(job);
+  S.file = null; S.useReuse = false;
+  render(); updateQbar(); runQueue();
+
+  if (goNext){
+    const idx = S.items.indexOf(it);
+    const next = S.items.slice(idx + 1).concat(S.items.slice(0, idx)).find(i => !isDone(i));
+    if (next) openSheet(next.id); else closeSheet();
+  } else closeSheet();
+}
+
+async function runQueue(){
+  if (qRunning) return;
+  qRunning = true;
+  while (Q.length){
+    const job = Q[0];
+    updateQbar();
+    try {
+      let res;
+      if (job.reuse){
+        res = await run('reuseItem', job.project, job.id, job.weight, job.reuse.project, job.reuse.id);
+      } else {
+        const photo = job.file ? await preparePhoto(job.file) : null;
+        res = await run('saveItem', job.project, job.id, job.weight, photo);
+        if (photo && res.item && res.item.thumbId) thumbCache[res.item.thumbId] = Promise.resolve('data:image/jpeg;base64,' + photo.thumbB64);
+      }
+      Q.shift();
+      const it = job.project === S.project && S.items.find(i => i.id === job.id);
+      if (it && res.item && !Q.some(j => j.id === job.id && j.project === job.project)){
+        Object.assign(it, res.item);
+        delete it.pending; delete it.failed; if (it.photoId) delete it.reuse;
+      }
+      if (res.mail){
+        $('dl-status').textContent = mailNote(res.mail).trim();
+        $('dl-status').className = 'status' + (res.mail.sent ? ' ok' : ' err');
+      }
+    } catch(e){
+      Q.shift();
+      job.error = errMsg(e);
+      FAILED.push(job);
+      const it = job.project === S.project && S.items.find(i => i.id === job.id);
+      if (it){ delete it.pending; it.failed = job.error; }
     }
-    if (res.item){ Object.assign(it, res.item); if (it.photoId) delete it.reuse; }
-    S.busy = false; clearFile(); S.useReuse = false;
-    render();
-    const note = mailNote(res.mail);
-    if (note){ $('dl-status').textContent = note.trim(); $('dl-status').className = 'status' + (res.mail.sent ? ' ok' : ' err'); }
-    if (res.mail && res.mail.sent) loadItems();
-    if (goNext){
-      const idx = S.items.indexOf(it);
-      const next = S.items.slice(idx + 1).concat(S.items.slice(0, idx)).find(i => !isDone(i));
-      if (next){ await openSheet(next.id); if (note) setStatus('저장했습니다.' + note, res.mail.sent ? 'ok' : 'err'); }
-      else closeSheet();
-    } else closeSheet();
-  } catch(e){
-    S.busy = false;
-    setStatus('저장하지 못했습니다. ' + errMsg(e), 'err');
-  } finally {
-    $('save').disabled = $('save-next').disabled = false;
+    if (job.project === S.project) render();
+  }
+  qRunning = false;
+  updateQbar();
+}
+
+function updateQbar(){
+  const bar = $('qbar');
+  if (Q.length){
+    bar.hidden = false; bar.className = 'qbar';
+    $('q-text').textContent = '사진 저장 중 · ' + Q.length + '건 남음 (계속 찍어도 됩니다)';
+    $('q-retry').hidden = true;
+  } else if (FAILED.length){
+    bar.hidden = false; bar.className = 'qbar err';
+    $('q-text').textContent = '저장 실패 ' + FAILED.length + '건 · ' + FAILED[FAILED.length - 1].error;
+    $('q-retry').hidden = false;
+  } else {
+    bar.hidden = true;
   }
 }
+function retryFailed(){
+  while (FAILED.length){
+    const job = FAILED.shift(); delete job.error; Q.push(job);
+    const it = job.project === S.project && S.items.find(i => i.id === job.id);
+    if (it){ it.pending = true; delete it.failed; }
+  }
+  render(); runQueue();
+}
+window.addEventListener('beforeunload', e => { if (Q.length){ e.preventDefault(); e.returnValue = ''; } });
+$('q-retry').addEventListener('click', retryFailed);
 $('save').addEventListener('click', () => save(false));
 $('save-next').addEventListener('click', () => save(true));
 $('w-in').addEventListener('keydown', e => { if (e.key === 'Enter') save(true); });
@@ -596,6 +697,7 @@ function imgSize(src){ return new Promise(ok => { const im = new Image(); im.onl
 function stamp(){ const d = new Date(); return d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0'); }
 
 $('dl-xlsx').addEventListener('click', async () => {
+  if (Q.length){ dlStatus('사진 저장이 끝난 뒤 받아 주세요 (' + Q.length + '건 남음).', 'err'); return; }
   const btn = $('dl-xlsx'); btn.disabled = true;
   try {
     dlStatus('최신 내용 불러오는 중…');

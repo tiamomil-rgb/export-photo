@@ -1,5 +1,5 @@
 // 앱 화면 파일을 저장해 두었다가 빠르게 열기 (화면 파일은 항상 최신을 먼저 시도)
-const CACHE = 'export-photo-v1';
+const CACHE = 'export-photo-v3';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
